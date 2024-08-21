@@ -1,0 +1,428 @@
+---
+title: "Association of PFHpA and Omics - Volcano Plots (Fig 2a&2b)"
+author: "Zhenjiang Li"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+toc: true
+format: 
+  html:
+      code-fold: true
+      html-math-method: katex
+editor: visual
+editor_options: 
+  chunk_output_type: console
+project:
+  execute-dir: project
+---
+
+## Environment Setup
+
+```{r}
+#| include: false
+
+library(tidyverse)
+library(fs)
+library(cowplot)
+library(jag2)
+library(broom)
+library(janitor)
+library(epiomics)
+
+library(colorspace)
+library(janitor)
+library(RColorBrewer)
+library(readr)
+
+
+library(readxl)
+library(mgcv)
+library(tidymv)
+library(kableExtra)
+library(ggrepel)
+```
+
+```{r}
+#| include: false
+
+# This script include adjusted univariate associations of plasma pfas and outcomes.
+# Load libraries and directories.
+source(here::here("0_project_setup", "!directories.R"))
+dir_project <- here::here() %>% dirname() %>% fs::path(.)
+
+wrapper <- function(x, ...) 
+{
+  paste(strwrap(x, ...), collapse = "\n")
+}
+
+font_size <- 5
+
+create_volcano <- function(df)
+{
+  volcano_plot <- ggplot(
+    data = df,
+    aes(x=estimate, y=-log10(p_value), col = color_code)) +
+    geom_point() +
+    scale_color_manual(values = c("black", "blue", "red")) +
+    theme_classic() +
+    labs(y = expression(-log[10](p)), x = "Effect estimates") +
+    theme(
+      axis.text = element_text(size = 10),
+      legend.position = "none"
+    )
+  return(volcano_plot)
+}
+
+recode_site_bi <- function(df){
+  df <- df %>% mutate(
+    site_bi = ifelse(site == "CIN", "CIN", "Non CIN")
+  )
+  return(df)
+}
+```
+
+## Model parameters
+
+```{r}
+# Define variables 
+exposure <- c("pf_hp_a_targeted_plasma_log2")
+covars <- c("sex", "race_binary", "parents_income_0", "ageyrs_0", "site_di")
+```
+
+## Load data
+
+```{r}
+metabolomics <- read.csv(fs::path(
+  dir_project,
+  "10_LUCID",
+  "0_data",
+  "tl_metabolomics.csv"))%>%
+  column_to_rownames("key") %>% 
+  t() %>% data.frame() %>% 
+  rownames_to_column("feature")
+
+dim(metabolomics) # 131 x 24372
+
+metabolomics<- metabolomics %>%  
+  mutate(feature = str_replace(feature, "X", ""))%>%
+  mutate(mz = str_split_fixed(feature, "_", 2)[,1],
+         time = str_split_fixed(feature, "_", 2)[,2]) %>%
+  mutate(mz = round(as.numeric(mz), 5),
+         time = round(as.numeric(time), 1)) %>%
+  mutate(feature = str_c(mz,time, sep= "_"))
+
+
+# load annotated metabolomics
+annotated_metabolomics <-
+  readxl::read_xlsx(fs::path(dir_home,
+                    "2_Cleaned Data",
+                    "Metabolomics",
+                    "confirmed_unique_annotation_0502.xlsx"))%>%
+  mutate(feature = str_c(mz, time, sep = "_"))%>%
+  filter(grepl("Endogenous", Standard_grp))%>% #410
+  filter(!grepl("Pesticides", Standard_class)) #358
+
+annotated_metabolomics_data <- metabolomics %>% 
+  filter(feature %in% annotated_metabolomics$feature)%>%
+  dplyr::select(-mz, -time) %>%
+  column_to_rownames("feature") %>% 
+  t() %>% data.frame() %>% 
+  rownames_to_column("key") %>%
+  mutate(key = str_replace(key , "X", ""))
+
+proteomics <- read.csv(fs::path(
+  dir_project,
+  "10_LUCID",
+  "0_data",
+  "tl_proteomics.csv"))
+dim(proteomics) # 131 x 703
+
+main_var <- read.csv(fs::path(dir_project,
+  "10_LUCID",
+  "0_data",
+  "tl_exposure_outcome_covars.csv"))
+dim(main_var) # 131 x 7
+
+tl_data <- readRDS(fs::path(dir_home,
+                            "2_Cleaned Data",
+                            "tl_covariates_outcomes_w.rds"))
+main_var <- main_var %>% 
+  tidylog::left_join(tl_data %>%
+                       dplyr::select(key, nafld_nash_mul_0, site)%>%
+                       mutate(key = as.integer(key),
+                              site_di = ifelse(site == "CIN", "CIN", "Non_CIN")), 
+                     by = "key")
+
+# match IDs
+annotated_metabolomics_data <- annotated_metabolomics_data[order(annotated_metabolomics_data$key), ]
+proteomics <- proteomics[order(proteomics$key), ]
+main_var <- main_var[order(main_var$key), ]
+main_var$nafld_di_0 <- as.factor(main_var$nafld_di_0)
+all(c(setequal(annotated_metabolomics_data$key, proteomics$key),
+      setequal(annotated_metabolomics_data$key, main_var$key)))
+# should be TRUE
+
+main_var <- main_var %>% 
+  mutate(nafld_di_0 = ifelse(nafld_di_0 == "NAFLD", 1, 0))
+
+data <- annotated_metabolomics_data %>% 
+  mutate(key = as.numeric(key)) %>%
+  tidylog::left_join(proteomics) %>%
+  tidylog::left_join(main_var)
+
+# Sig pro detected by Hongxu
+sample_sig_pro <- read_xlsx(
+  fs::path(
+    dir_home,
+    "4_Projects",
+    "TL_PFAS NAFLD",
+    "12_OWAS results - translational results",
+    "1_OWAS results",
+    "PWAS_results_9 May 2023.xlsx"
+  )
+)
+```
+
+```{r}
+#| label: load data
+
+## working dataset for pfas-metabolomics analysis
+tl_plasma_metabolomics_working <- read_rds(fs::path(dir_temp, "plasma_metabolomics_fts_merged.rds")) 
+
+colnames_met_fts <- colnames(tl_plasma_metabolomics_working)[-c(1:8)]
+length(colnames_met_fts)
+
+## proteomics dataset
+dir_prot <- fs::path(dir_home, "4_Projects", 
+                     "TL_baseline PFAS proteomics",
+                     "0_data")
+
+tl_proteomics_working <- read_csv(fs::path(dir_prot,"complete_proteomics_dataset_for_analysis.csv"))
+
+colnames_pro <- colnames(tl_proteomics_working)[-c(1:8)]
+length(colnames_pro)
+
+
+## wide format mummichog results-----
+mum_pw_wide <- read_rds(
+  fs::path(dir_final, 
+           "pf_hp_a Mummichog sig PW.RDS"))
+
+## Read in full mzrt key dataset(empirical compound, pathway, etc)
+mzrt_key <- ecd_pw_key_final <- read_csv(fs::path(dir_results,
+                                     "mummichog_pw_ec_feature_key_with_cpd_names.csv"))
+# 2) Read in MWAS data------
+mwas_result <- read_rds(fs::path(dir_final,
+                                 "exposure_plasma_omics_data.rds")) %>%
+  mutate(feature_name = as.character(feature_name))
+
+
+## Filter only mzrt in annotated set(ec_pw_key)------
+mwas_result_annotated_set <- mwas_result %>%
+  tidylog::filter(feature_name %in% ecd_pw_key_final$name)
+
+## Perform meta analysis of p values from mwas results-----
+mwas_result_annotated_set1 <- mwas_result_annotated_set %>%
+  mutate(
+         sig_mwas = if_else(p_value < 0.05, "Sig", "Not sig"),
+         ) %>%
+  dplyr::select(feature_name, sig_mwas, everything())
+
+# 3) Merge mummichog results(pw_ec_key) with mwas result------
+## step1. change format for mzrt key pathways for next step 
+mzrt_key_all_pathways <- mzrt_key$pathway %>%
+  str_split(., "; ") %>%
+  enframe() %>%
+  rename(pathway_dfs = value) %>% dplyr::select(-name)
+
+## step2. Filter significant pathway from mummichog results (pval_meta < 0.01)
+
+sig_pw <- mum_pw_wide %>% filter(sig == "Sig.")
+
+## step3. Filter mzrt associated with pathways Sig. in both exp_omic and omic_out to get mzrt_ec_pw key
+
+mzrt_key_sig_pws_only_1 <- bind_cols(mzrt_key,
+                                     mzrt_key_all_pathways) %>% 
+  unnest(pathway_dfs) %>% 
+  tidylog::filter(pathway_dfs %in% sig_pw$path) %>%
+  ungroup() %>%
+  dplyr::select(-pathway, -path_2) %>% 
+  rename(pathway = pathway_dfs)
+
+## step4: reduce across ECs
+mzrt_key_sig_pws_only_2 <- mzrt_key_sig_pws_only_1 %>% 
+  tidylog::group_by(empirical_compound, 
+                    matched_form,
+                    query_mass,
+                    retention_time,
+                    name) %>% 
+  tidylog::summarise(met_name = unique(met_name) %>% 
+                       str_c(collapse = "; "), 
+                     matched_compound = unique(matched_compound) %>% 
+                       str_c(collapse = "; "), 
+                     mass_diff =  unique(mass_diff) %>% 
+                       str_c(collapse = "; "), 
+                     pathway =  unique(pathway) %>% 
+                       str_c(collapse = "; "), ) %>% 
+  dplyr::select(empirical_compound, met_name, everything()) %>% 
+  ungroup()
+
+## step 5.Merge mzrt_key_sig_pws_only with mwas results ----------
+t1 <- tidylog::inner_join(mwas_result_annotated_set1,
+                         mzrt_key_sig_pws_only_2,
+                         by = c("feature_name"="name")) %>% 
+  dplyr::select(met_name, pathway, 
+         sig_mwas, 
+         everything()) %>% 
+  arrange(pathway, empirical_compound)
+
+## step6. Filter only empirical compounds which have at least one mz/rt significant
+annotated_sig_ecs_ee <- t1  %>% 
+  tidylog::filter(sig_mwas == "Sig") %>%
+  dplyr::select(met_name, 
+         pathway, 
+         query_mass, 
+         retention_time, 
+         feature_name,
+         empirical_compound,
+         matched_form,
+         mass_diff,
+         everything())
+
+annotated_ecs_ee <- t1  %>% 
+  dplyr::select(met_name, 
+         pathway, 
+         query_mass, 
+         retention_time, 
+         feature_name,
+         empirical_compound,
+         matched_form,
+         mass_diff,
+         everything())
+
+annotated_ecs_ee <- annotated_ecs_ee %>% 
+  mutate(name_plot = sub(';.*$','', met_name))
+
+tl_plasma_metabolomics_working <- tl_plasma_metabolomics_working %>% 
+  dplyr::select(key:pf_hp_a_targeted_plasma_log2, all_of(annotated_ecs_ee$feature_name))
+```
+
+## Volcano Plots
+
+### MWAS
+
+```{r}
+owas_met <- epiomics::owas(
+  df = data,
+  var = exposure,
+  omics = colnames(annotated_metabolomics_data)[-1],
+  covars = covars,
+  var_exposure_or_outcome = "exposure",
+  family = "gaussian",
+  confidence_level = 0.95,
+  conf_int = T)
+
+owas_met_annotation <- owas_met %>%
+  mutate(feature_name = str_replace(feature_name , "X", "")) %>%
+  tidylog::left_join(annotated_metabolomics, by = c("feature_name" = "feature")) %>% 
+  mutate(name_plot = sub(';.*$','', Name))
+```
+
+```{r}
+plot_input <- owas_met_annotation %>% 
+  mutate(significance = case_when(
+    p_value < 0.05 & adjusted_pval < 0.2 ~ "q value < 0.2",
+    p_value < 0.05 & adjusted_pval >= 0.2 ~ "p value < 0.05",
+    TRUE ~ "Null"
+  ),
+  label = ifelse(significance %in% c("q value < 0.2", "p value < 0.05"),
+                 as.character(name_plot), NA))
+
+mycolors <- c("blue", "blue", "grey")
+names(mycolors) <- c("q value < 0.2", "p value < 0.05", "Null")
+
+volcano_plot <- ggplot(
+  data = plot_input,
+  aes(x = estimate, y = -log10(p_value), col = significance, label = label)) + 
+  geom_point() +
+  ylab(expression(-log[10]~"(p)")) +
+  xlab(expression("Beta estimate")) +
+  theme_classic() +
+  geom_text_repel(max.overlaps = Inf)  +
+  scale_colour_manual(values = mycolors) +
+  # labs(title = "Volcano plot for the adjusted associations of PFHpA with metabolomics") +
+  theme(plot.caption = element_text(hjust = 0),
+        legend.position = "bottom",
+        legend.title = element_blank(),
+        text = element_text(size = 15, family = "Arial"))
+
+ggsave(
+  plot = volcano_plot,
+  filename = fs::path(
+    dir_figures,
+    "volcano plot_metabolomics_PFHpA.png"
+  ),
+  width = 6, height = 6, dpi = 600, bg = "white"
+)
+```
+
+### PWAS
+
+```{r}
+colnames_omic_fts <- colnames(proteomics)[-1]
+length(colnames_omic_fts)
+
+owas_pro <- epiomics::owas(
+  df = data,
+  var = exposure,
+  omics = colnames_omic_fts,
+  covars = covars,
+  var_exposure_or_outcome = "exposure",
+  family = "gaussian",
+  confidence_level = 0.95,
+  conf_int = T
+)
+owas_pro$feature_name <- as.character(owas_pro$feature_name)
+
+sig_owas_pro <- owas_pro %>% 
+  dplyr::filter(p_value < 0.05)
+
+dim(sig_owas_pro);dim(sample_sig_pro)
+sig_owas_pro$feature_name %in% sample_sig_pro$feature_name
+typeof(sig_owas_pro$feature_name);typeof(sample_sig_pro$feature_name)
+```
+
+```{r}
+plot_input <- owas_pro %>% 
+  mutate(significance = case_when(
+    p_value < 0.05 & adjusted_pval < 0.2 ~ "q value < 0.2",
+    p_value < 0.05 & adjusted_pval >= 0.2 ~ "p value < 0.05",
+    TRUE ~ "Null"
+  ),
+  label = ifelse(significance != "Null", toupper(as.character(feature_name)), NA))
+
+mycolors <- c("red", "blue", "grey")
+names(mycolors) <- c("q value < 0.2", "p value < 0.05", "Null")
+
+volcano_plot <- ggplot(
+  data = plot_input,
+  aes(x = estimate, y = -log10(p_value), col = significance, label = label)) + 
+  geom_point() +
+  ylab(expression(-log[10]~"(p)")) +
+  xlab(expression("Beta estimate")) +
+  theme_classic() +
+  geom_text_repel(max.overlaps = Inf)  +
+  scale_colour_manual(values = mycolors) +
+  # labs(title = "Volcano plot for the adjusted associations of PFHpA with metabolomics") +
+  theme(plot.caption = element_text(hjust = 0),
+        legend.position = "bottom",
+        legend.title = element_blank(),
+        text = element_text(size = 15, family = "Arial"))
+
+ggsave(
+  plot = volcano_plot,
+  filename = fs::path(
+    dir_figures,
+    "volcano plot_proteomics_PFHpA.png"
+  ),
+  width = 6, height = 6, dpi = 600, bg = "white"
+)
+```

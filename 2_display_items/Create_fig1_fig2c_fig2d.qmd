@@ -1,0 +1,607 @@
+---
+title: "PFAS MAFLD - Figure 1, Figure 2c&2d"
+author: "Zhenjiang Li"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+toc: true
+format: 
+  html:
+      code-fold: true
+      html-math-method: katex
+editor: visual
+editor_options: 
+  chunk_output_type: console
+project:
+  execute-dir: project
+---
+
+## Environment Setup
+
+```{r setup, include = FALSE, echo = FALSE}
+# This script include adjusted univariate associations of plasma pfas and outcomes.
+# Load libraries and directories.
+source(here::here("0_project_setup", "!libraries.R"))
+source(here::here("0_project_setup", "!directories.R"))
+
+library(readxl)
+library(mgcv)
+library(tidymv)
+library(kableExtra)
+
+wrapper <- function(x, ...) 
+{
+  paste(strwrap(x, ...), collapse = "\n")
+}
+
+font_size <- 5
+```
+
+```{r modify path, include=FALSE, echo=FALSE}
+create_shortcut <- function(path, short_cut, drive)
+{
+  return(
+    sub(gsub("\\)", "\\\\)", gsub("\\(", "\\\\(", short_cut)), paste0(drive, ":"), path))
+}
+
+if(nchar(dir_project) > 150)
+{
+  system("subst x: /D")
+  short_cut <- here::here() %>% dirname %>% dirname %>% dirname %>% dirname %>% dirname
+  system(paste0("subst x: \"", short_cut, "\""))
+  
+  dir_data <- create_shortcut(dir_data, short_cut, "x")
+  dir_figure <- create_shortcut(dir_figure, short_cut, "x")
+  dir_home <- create_shortcut(dir_home, short_cut, "x")
+  dir_project <- create_shortcut(dir_project, short_cut, "x")
+  dir_project_data <- create_shortcut(dir_project_data, short_cut, "x")
+  dir_report <- create_shortcut(dir_report, short_cut, "x")
+}
+```
+
+## Load data
+
+```{r}
+# Load data
+data <- read_rds(fs::path(dir_project_data, "tl_analysis_ready_data.rds"))
+
+data <- data %>% 
+  mutate(site_di = ifelse(site == "CIN", "CIN", "Not CIN"))
+
+# NAFLD related outcomes----
+outcome <- c("nafld_di_0")
+
+covars <- c(
+            # "bmi_0", 
+            "race_binary",
+            "site_di",
+            # "smoke_0", 
+            "age_0", 
+            "sex", 
+            "parents_income_0")
+
+# exposures: plasma pfas----
+plasma_pfas <- setdiff(colnames(data)[grep("_targeted_plasma", colnames(data))], c("br_pfos_targeted_plasma", "n_pfos_targeted_plasma"))
+
+# Adding the categorical exposures into the data set----
+data_analysis <- data %>%
+  mutate_at(.vars = vars(all_of(plasma_pfas)), 
+            .funs = list(tertile = ~ntile(.,  3), 
+                         median = ~if_else(. > median(., na.rm = TRUE), 
+                                           2,
+                                           1),
+                         quantile = ~as.integer(cut(., quantile(., c(0, 1/4,1/2,3/4,1), 
+                                                                na.rm = TRUE))),
+                         quintile = ~as.integer(cut(., quantile(., c(0, 1/5,2/5,3/5,4/5,1), 
+                                                                na.rm = TRUE))),
+                         sextile = ~as.integer(cut(., quantile(., c(0, 1/6,2/6,3/6,4/6,5/6,1), 
+                                                               na.rm = TRUE))),
+                         septile = ~as.integer(cut(., quantile(., c(0, 1/7,2/7,3/7,4/7,5/7,6/7,1), 
+                                                               na.rm = TRUE))),
+                         octile = ~as.integer(cut(., quantile(., c(0, 1/8,2/8,3/8,4/8,5/8,6/8,7/8,1), 
+                                                              na.rm = TRUE)))
+            ))
+
+# extracted the related column names and stored into a variable-----
+pfas_names_categorical <- colnames(data_analysis)[
+  grepl("median|tertile|quantile|quintile|sextile|septile|octile",
+        colnames(data_analysis))]
+
+# Getting the intervals for each tiled data-----
+data_interval <- data %>%
+  mutate_at(.vars = vars(all_of(plasma_pfas)), 
+            .funs = list(tertile = ~cut(., quantile(., c(0, 1/3, 2/3, 1), 
+                                                 na.rm = TRUE)), 
+                         median = ~cut(., quantile(., c(0, 1/2, 1), 
+                                                   na.rm = TRUE)),
+                         quantile = ~cut(., quantile(., c(0, 1/4,1/2,3/4,1), 
+                                                     na.rm = TRUE)),
+                         quintile = ~cut(., quantile(., c(0, 1/5,2/5,3/5,4/5,1), 
+                                                     na.rm = TRUE)),
+                         sextile = ~ cut(., quantile(., c(0, 1/6,2/6,3/6,4/6,5/6,1), 
+                                                     na.rm = TRUE)),
+                         septile = ~ cut(., quantile(., c(0, 1/7,2/7,3/7,4/7,5/7,6/7,1), 
+                                                     na.rm = TRUE)),
+                         octile  = ~ cut(., quantile(., c(0, 1/8,2/8,3/8,4/8,5/8,6/8,7/8,1), 
+                                                     na.rm = TRUE))
+            ))
+
+# saving the intervals information to a file-----
+interval <- data_interval %>% 
+  dplyr::select(all_of(pfas_names_categorical)) %>%
+  map(.,table) %>% 
+  map(.,as.data.frame) %>% 
+  bind_rows(.id = "pfas") %>%
+  dplyr::rename(interval = Var1,
+                count = Freq)
+
+n <- length(plasma_pfas)
+
+num <- c(rep(c(1,2,3),n),rep(c(1,2),n),
+         rep(c(1,2,3,4),n), rep(c(1,2,3,4,5),n),
+         rep(c(1,2,3,4,5,6),n), rep(c(1,2,3,4,5,6,7),n),
+         rep(c(1,2,3,4,5,6,7,8),n))
+
+interval_df<- interval %>% mutate(level = num,
+                                  pfas = str_c(pfas, level, ""))
+
+# creating another data set in which the tiled variables are charactoer----
+data_analysis_factor <- data_analysis %>% 
+  dplyr::mutate(
+    across (all_of(pfas_names_categorical),as.numeric)
+  ) %>%
+  dplyr::mutate_at(
+    c("sex", "race_binary"), as.factor
+  )
+```
+
+## Multinomial regression PFHpA and NAFLD related outcomes
+
+NAFLD(3 levels), Hepatocellular ballooning, grade of steatosis, NASH
+
+```{r}
+# Load result
+result <- read_csv(fs::path(dir_report, "Adjusted Multinomial Logistic Regression", "2_3_adjusted_multinomial_logistic_regression_with_site_without_bmi.csv")) %>%
+  filter(grepl("pf_hp_a", term))
+
+# Add reference category
+result1 <- result %>% 
+  add_row(y = "nafld_nash_mul_0", y_level = "No NAFLD", odds_ratio = 1) %>%
+  add_row(y = "steatgrd_mul_0", y_level = "None", odds_ratio = 1) %>%
+  add_row(y = "bhepa_0", y_level = "None", odds_ratio = 1) %>%
+  add_row(y = "nash_mul_0",y_level = "None", odds_ratio = 1) %>%
+  mutate(outcome = case_when(grepl("nafld_nash_mul",y)~"NAFLD",
+          grepl("steatgrd", y) ~ "Grade of Steatosis",
+          grepl("bhepa", y) ~"Hepatocellular Ballooning",
+          y == "nash_mul_0" ~"NASH")) %>%
+  drop_na(outcome) %>%
+  mutate(y_level = case_when(y_level == "33-67% and >67%" ~"34 - >67%",
+                             grepl("Many", y_level) ~"Many",
+                             grepl("Fedata", y_level) ~"Few",
+                             grepl(">=3", y_level) ~ "≥3",
+                             TRUE~y_level)) %>%
+  mutate(outcome = factor(outcome, 
+                          levels = c("NAFLD", "Hepatocellular Ballooning", "Grade of Steatosis", "NASH"))) %>%
+  mutate(sig = ifelse(p_value < 0.05, "Sig.", "Not Sig."))%>%
+  mutate(sig = ifelse(is.na(sig), "Not Sig.", sig)) %>%
+  mutate(y_level = case_when(y_level == "No NAFLD"~"No MASLD",
+                             y_level == "NAFLD not NASH" ~ "MASLD not MASH",
+                             y_level == "NASH" ~ "MASH",
+                             TRUE ~ y_level))
+
+level = c("No MASLD", "MASLD not MASH", "MASH", "None", "Few", "Many", "5-33%", "34 - >67%", "1", "2", "≥3")
+
+
+p1 <- result1 %>%
+  filter(outcome == "NAFLD")%>%
+  ggplot(aes(x = factor(y_level, levels = level),y = odds_ratio)) +
+  geom_point(size = 1) +
+  geom_errorbar(aes(ymin = exp_conf_low,
+                    ymax = exp_conf_high),
+                width = 0) +
+  geom_hline(yintercept = 1, linetype = 2) +
+  theme(
+    axis.title.y = element_blank(),
+    axis.title.x = element_blank(),
+    # strip.text.x = element_blank(), 
+    legend.position = "none", 
+    panel.background = element_rect(fill="white"), 
+    strip.background = element_rect(fill = "white"),
+    axis.line.x = element_line(color = "black"),
+    axis.line.y = element_line(color = "black"),
+    text = element_text(size = 10),
+    strip.text.y = element_text(angle = 0, hjust = 0))+
+  scale_color_manual(values = c("grey20", "red"))
+    # facet_wrap(.~ outcome,scales = "free")
+
+p2 <- result1 %>%
+  filter(outcome == "Hepatocellular Ballooning")%>%
+  ggplot(aes(x = factor(y_level, levels = level),y = odds_ratio)) +
+  geom_point(size = 1) +
+  geom_errorbar(aes(ymin = exp_conf_low,
+                    ymax = exp_conf_high),
+                width = 0) +
+  geom_hline(yintercept = 1, linetype = 2) +
+  theme(
+    axis.title.y = element_blank(),
+    axis.title.x = element_blank(),
+    # strip.text.x = element_blank(), 
+    legend.position = "none", 
+    panel.background = element_rect(fill="white"), 
+    strip.background = element_rect(fill = "white"),
+    axis.line.x = element_line(color = "black"),
+    axis.line.y = element_line(color = "black"),
+    text = element_text(size = 10),
+    strip.text.y = element_text(angle = 0, hjust = 0))+
+    scale_color_manual(values = c("grey20", "red")) 
+    # facet_wrap(.~ outcome,scales = "free")
+
+p3 <- result1 %>%
+  filter(outcome == "Grade of Steatosis")%>%
+  ggplot(aes(x = factor(y_level, levels = level),y = odds_ratio)) +
+  geom_point(size = 1) +
+  geom_errorbar(aes(ymin = exp_conf_low,
+                    ymax = exp_conf_high),
+                width = 0) +
+  geom_hline(yintercept = 1, linetype = 2) +
+  theme(
+    axis.title.y = element_blank(),
+    axis.title.x = element_blank(),
+    # strip.text.x = element_blank(), 
+    legend.position = "none", 
+    panel.background = element_rect(fill="white"), 
+    strip.background = element_rect(fill = "white"),
+    axis.line.x = element_line(color = "black"),
+    axis.line.y = element_line(color = "black"),
+    text = element_text(size = 10),
+    strip.text.y = element_text(angle = 0, hjust = 0))+
+    scale_color_manual(values = c("grey20", "red")) 
+    # facet_wrap(.~ outcome,scales = "free")
+
+p4 <- result1 %>%
+  filter(outcome == "NASH")%>%
+  mutate(outcome = ifelse(outcome == "NASH", "MASH", outcome)) %>%
+  ggplot(aes(x = factor(y_level, levels = level),y = odds_ratio)) +
+  geom_point(size = 1) +
+  geom_errorbar(aes(ymin = exp_conf_low,
+                    ymax = exp_conf_high),
+                width = 0) +
+  geom_hline(yintercept = 1, linetype = 2) +
+  theme(
+    axis.title.y = element_blank(),
+    axis.title.x = element_blank(),
+    # strip.text.x = element_blank(), 
+    legend.position = "none", 
+    panel.background = element_rect(fill="white"), 
+    strip.background = element_rect(fill = "white"),
+    axis.line.x = element_line(color = "black"),
+    axis.line.y = element_line(color = "black"),
+    text = element_text(size = 10),
+    strip.text.y = element_text(angle = 0, hjust = 0))+
+    scale_color_manual(values = c("grey20", "red")) 
+    # facet_wrap(.~ outcome,scales = "free")
+```
+
+### Figure 1a
+
+```{r}
+png(fs::path(
+  dir_figure,
+  "Final Figures",
+  "Figure 1A.png"),
+  width = 1.5, height = 1.5, units = "in", res = 600)
+(p_f1c <- plot_grid(
+  p1 +
+    ylim(c(0.2, 5.5)) +
+    scale_x_discrete(labels = c("No MASLD", "MASL\nnot MASH", "MASH")) +
+    labs(y = "Odds Ratio") +
+    theme(
+      axis.text = element_text(size = font_size),
+      axis.text.x = element_text(angle = 45, vjust = 0.6),
+      axis.title.y = element_text(size = font_size)
+    ), 
+  nrow = 1,
+  align = "h", axis = "bt"
+))
+dev.off()
+```
+
+## Dose-response plasma-PFHpA and NAFLD (GAM)
+
+```{r}
+model_gam_pfhpa_MAFLD <- as.formula(
+  paste0(
+    outcome, " ~ ",
+    "s(pf_hp_a_targeted_plasma_octile, k = 8)", " + ",
+    paste(covars, collapse = " + ")
+  )
+)
+
+fit_gam_pfhpa_MAFLD <- gam(
+  model_gam_pfhpa_MAFLD,
+  family = binomial(link = "logit"),
+  data = data_analysis_factor,
+  method = "REML",
+  na.action = na.exclude
+)
+
+p_trend <- summary(fit_gam_pfhpa_MAFLD)$s.table[4] %>% round(3)
+```
+
+### Figure 1b
+
+```{r}
+x_labels <- interval %>%
+  dplyr::filter(pfas %in% "pf_hp_a_targeted_plasma_octile") %>%
+  dplyr::select(interval) %>% unlist %>% as.vector
+
+png(fs::path(
+  dir_figure,
+  "Final Figures",
+  "Figure 1B.png"),
+  width = 6, height = 4, units = "in", res = 600)
+
+par(family="sans")
+par(cex = 1.5)
+par(mar=c(6, 4, 2, 2))
+p_raw <- plot(fit_gam_pfhpa_MAFLD,
+     pages = 1,
+     trans = plogis,
+     shift = coef(fit_gam_pfhpa_MAFLD)[1],
+     seWithMean = T,
+     rug = F, shade = T, shade.col = "gray80",
+     col = "black",
+     xlab = "",
+     ylab = "Predicted probability of MAFLD",
+     bty = "n",
+     xaxt = "n", yaxt = "n")
+box("plot", bty = "l", lwd = 2)
+# mtext("b. Dose-resonse of PFHpA and MAFLD", side=3, line=0.5, adj = -0.4, font = 2)
+# title("B. Dose-resonse of PFHpA and MAFLD", line = 0.5, adj = 0)
+mtext("Octiles of PFHpA concentrations (ng/mL)", side = 1, line = 4, font = 1)
+axis(side = 1, at = 1:8, labels = F, lwd = 0, lwd.ticks = 2, tck = 0.02)
+text(x = 1:8, y=par("usr")[3]-0.005, labels = x_labels, srt = 25, adj = 0.7, xpd = NA, font = 1)
+axis(side = 2, at = seq(0, 0.05, by = 0.01), lwd = 0, lwd.ticks = 2, las = 2, tck = 0.02)
+text(x = 2, y = 0.04, labels = expression(italic(p)['trend']*'='*0.002), font = 1)
+par(mar=c(5, 4, 4, 2) + 0.1)
+
+dev.off()
+```
+
+## Logistic regression of plasma-PFHpA (ng/mL) and Fibrostg
+
+\* Outcome = fibrosis
+
+\* Exposure = PFHpA targeted plasma
+
+\* Covariates = BMI_0, race_binary, age_0, sex, parents_income_0, site_di
+
+```{r}
+result_fib <- glm(
+  as.formula(paste0("fibrostg_di_0 ~ pf_hp_a_targeted_plasma + ", paste(covars, collapse = " + "))),
+  family = binomial(link = "logit"),
+  data = data_analysis_factor
+) %>% broom::tidy(conf.int = T) %>% slice(2)
+  
+
+p5<- result_fib %>%
+  mutate(outcome = "Fibrosis",
+         y.level = "Present",
+         sig = "Sig.") %>%
+  add_row(outcome = "Fibrosis", estimate = 0, y.level = "None", sig = "Not Sig.") %>%
+  ggplot(aes(x = factor(y.level, levels = c("None", "Present")),y = estimate)) +
+  geom_point(size = 1) +
+  geom_errorbar(aes(ymin = conf.low,
+                    ymax = conf.high),
+                width = 0) +
+  geom_hline(yintercept = 1, linetype = 2) +
+  theme(
+    axis.title.y = element_blank(),
+    axis.title.x = element_blank(),
+    # strip.text.x = element_blank(), 
+    legend.position = "none", 
+    panel.background = element_rect(fill="white"), 
+    strip.background = element_rect(fill = "white"),
+    axis.line.x = element_line(color = "black"),
+    axis.line.y = element_line(color = "black"),
+    text = element_text(size = 10),
+    strip.text.y = element_text(angle = 0, hjust = 0))
+```
+
+### Figure 1c
+
+```{r}
+png(fs::path(
+  dir_figure,
+  "Final Figures",
+  "Figure 1C.png"),
+  width = 3, height = 3, units = "in", res = 600)
+(p_f1d <- plot_grid(
+  p2 +
+    ylim(c(0.2, 6.5)) +
+    scale_x_discrete(labels = c("None", "Few", "Many")) +
+    labs(y = "Odds Ratio") +
+    theme(
+      axis.text = element_text(size = font_size),
+      axis.text.x = element_text(angle = 45, vjust = 0.6),
+      axis.title.y = element_text(size = font_size)
+    ),
+  p3 +
+    ylim(c(0.2, 6.5)) +
+    scale_x_discrete(labels = c("None" = "None", "5-33%", "34 - >67%" = "34-67%")) +
+    theme(
+      axis.text = element_text(size = font_size),
+      axis.text.x = element_text(angle = 45, vjust = 0.6),
+      axis.line.y = element_blank(),
+      axis.ticks.y = element_blank(),
+      axis.text.y = element_blank()
+    ),
+  p5 +
+    ylim(c(0.2, 6.5)) +
+    scale_x_discrete(labels = c("None", "Present")) +
+    labs(y = "Odds Ratio") +
+    theme(
+      axis.text = element_text(size = font_size),
+      axis.text.x = element_text(angle = 45, vjust = 0.6),
+      axis.title.y = element_text(size = font_size)
+    ),
+  p4 +
+    ylim(c(0.2, 5.5)) +
+    scale_x_discrete(labels = c("None\n", "1", "2", "≥3")) +
+    theme(
+      axis.text = element_text(size = font_size),
+      axis.text.x = element_text(angle = 45, vjust = 0.7),
+      axis.line.y = element_blank(),
+      axis.ticks.y = element_blank(),
+      axis.text.y = element_blank()
+    ),
+  nrow = 2,
+  align = "h", axis = "bt"
+))
+dev.off()
+```
+
+## Pathway Analysis (IPA)
+
+Conducted by Ana.
+
+Pathways with at least 3 molecules
+
+```{r}
+ipa_pwas <- read_xlsx(fs::path(
+  dir_report, 
+  "Pathway analysis",
+  "IPA_PWAS and MWAS.xlsx"),
+  sheet = 2)
+dim(ipa_pwas)
+table(ipa_pwas$`p-value` < 0.05)
+
+ipa_pwas_plot <- ipa_pwas %>%
+  filter(abs(`Z-score`) >= 2) %>%
+  group_by(Categories) %>%
+  top_n(`p-value`, n = -1) %>%
+  ungroup() %>%
+  filter(!(`Diseases or Functions Annotation` %in% c(
+    "Development of head",
+    "Neurodegeneration",
+    "Recruitment of cells"
+  ))) %>%
+  filter(`# Molecules` >= 5) %>%
+  # filter(!(`Diseases or Functions Annotation` %in% c(
+  #   "Activation of cells",
+  #   "Cell movement",
+  #   "Immune mediated inflammatory disease",
+  #   "Inflammation of absolute anatomical region",
+  #   "Rheumatic Disease",
+  #   "Inflammation of joint"
+  # ))) %>%
+  top_n(`p-value`, n = -10) %>%
+  mutate_at("# Molecules", as.integer)
+
+View(ipa_pwas_plot)
+```
+
+```{r}
+ipa_mwas <- read_xlsx(fs::path(
+  dir_report,
+  "Pathway analysis",
+  "IPA_PWAS and MWAS.xlsx"),
+  sheet = 4)
+dim(ipa_mwas)
+table(ipa_mwas$`p-value` < 0.05)
+
+ipa_mwas_plot <- ipa_mwas %>%
+  # filter(abs(`Z-score`) >= 2) %>%
+  group_by(Categories) %>%
+  # top_n(`p-value`, n = -1) %>%
+  ungroup() %>%
+  filter(`# Molecules` >= 5) %>%
+  filter(!(`Diseases or Functions Annotation` %in% c(
+    "Chronic phase experimental autoimmune encephalomyelitis",
+    "Zymosan-induced peritonitis",
+    "Growth of bacteria",
+    "Entry into S phase",
+    "Activation of cells"
+  ))) %>%
+  top_n(`p-value`, n = -10) %>%
+  mutate_at("# Molecules", as.integer)
+# ipa_mwas_plot$`Diseases or Functions Annotation`[ipa_mwas_plot$`Diseases or Functions Annotation` == "Inflammation of organ"] <- "Inflammation"
+View(ipa_mwas_plot)
+```
+
+### Figure 2c
+
+```{r}
+png(fs::path(
+  dir_figure,
+  "Final Figures",
+  "Figure 2C.png"),
+  width = 3, height = 1.5, units = "in", res = 600)
+(p_fig1e_mwas <- ipa_mwas_plot %>%
+    ggplot +
+    geom_col(aes(x = `Diseases or Functions Annotation`,
+                 y = `-log10(pval)`,
+                 fill = `# Molecules`),
+             width = 0.5) +
+    scale_fill_gradient(high = "#0B3D2E", low = "#7BE495",
+                        breaks = c(5, 7, 9)) +
+    geom_hline(aes(yintercept = -log10(0.05)), lty = "dashed", color = "black") +
+    coord_flip() +
+    labs(y = expression("-log" [10] (italic(p))),
+         x = "Pathways enriched by metabolites\nin PFHpA exposed adolescents") +
+    theme(
+      plot.margin = unit(c(0.5,0,0,0), "cm"),
+      panel.background = element_blank(),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      axis.line = element_line(),
+      axis.text = element_text(size = font_size),
+      axis.title = element_text(size = font_size, face = "plain"),
+      legend.position = c(0,1.1),
+      legend.direction = "horizontal",
+      legend.key.size = unit(0.5,"line"),
+      legend.text=element_text(size = font_size-1),
+      legend.title = element_text(size = font_size)
+    ) +
+    guides(fill = guide_legend(title = "N. of enriched metabolites",
+                               nrow = 1))
+  )
+dev.off()
+```
+
+### Figure 2d
+
+```{r}
+png(fs::path(
+  dir_figure,
+  "Final Figures",
+  "Figure 2D.png"),
+  width = 3, height = 1.5, units = "in", res = 600)
+(p_fig1e_pwas <- ipa_pwas_plot %>%
+    ggplot +
+    geom_col(aes(x = `Diseases or Functions Annotation`,
+                 y = `-log10(pval)`,
+                 fill = `# Molecules`),
+             width = 0.5) +
+    scale_fill_gradient(high = "#132B43", low = "#56B1F7",
+                        breaks = c(5, 10, 15)) +
+    geom_hline(aes(yintercept = -log10(0.05)), lty = "dashed", color = "black") +
+    coord_flip() +
+    labs(y = expression("-log" [10] (italic(p))),
+         x = "Pathways enriched by proteins\nin PFHpA exposed adolescents") +
+    theme(
+      plot.margin = unit(c(0.5,0,0,0), "cm"),
+      panel.background = element_blank(),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      axis.line = element_line(),
+      axis.text = element_text(size = font_size),
+      axis.title = element_text(size = font_size, face = "plain"),
+      legend.position = c(0,1.1),
+      legend.direction = "horizontal",
+      legend.text=element_text(size = font_size-1),
+      legend.key.size = unit(0.5,"line"),
+      legend.title = element_text(size = font_size)
+    ) +
+    guides(fill = guide_legend(title = "N. of enriched proteins"))
+  )
+dev.off()
+```
