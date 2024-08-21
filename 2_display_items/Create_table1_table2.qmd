@@ -1,0 +1,169 @@
+---
+title: "PFAS MAFLD - Table 1 & 2"
+author: "Zhenjiang Li"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+toc: true
+format: 
+  html:
+      code-fold: true
+      html-math-method: katex
+editor: visual
+editor_options: 
+  chunk_output_type: console
+project:
+  execute-dir: project
+---
+
+## Environment Setup
+
+```{r setup, include = FALSE, echo = FALSE}
+# This script include adjusted univariate associations of plasma pfas and outcomes.
+# Load libraries and directories.
+source(here::here("0_project_setup", "!libraries.R"))
+source(here::here("0_project_setup", "!directories.R"))
+
+library(readxl)
+library(mgcv)
+library(tidymv)
+library(kableExtra)
+
+wrapper <- function(x, ...) 
+{
+  paste(strwrap(x, ...), collapse = "\n")
+}
+
+font_size <- 5
+```
+
+```{r modify path, include=FALSE, echo=FALSE}
+create_shortcut <- function(path, short_cut, drive)
+{
+  return(
+    sub(gsub("\\)", "\\\\)", gsub("\\(", "\\\\(", short_cut)), paste0(drive, ":"), path))
+}
+
+if(nchar(dir_project) > 150)
+{
+  system("subst x: /D")
+  short_cut <- here::here() %>% dirname %>% dirname %>% dirname %>% dirname %>% dirname
+  system(paste0("subst x: \"", short_cut, "\""))
+  
+  dir_data <- create_shortcut(dir_data, short_cut, "x")
+  dir_figure <- create_shortcut(dir_figure, short_cut, "x")
+  dir_home <- create_shortcut(dir_home, short_cut, "x")
+  dir_project <- create_shortcut(dir_project, short_cut, "x")
+  dir_project_data <- create_shortcut(dir_project_data, short_cut, "x")
+  dir_report <- create_shortcut(dir_report, short_cut, "x")
+}
+```
+
+## Load data
+
+```{r}
+# Load data
+data <- read_rds(fs::path(dir_project_data, "tl_analysis_ready_data.rds"))
+
+data <- data %>% 
+  mutate(site_di = ifelse(site == "CIN", "CIN", "Not CIN"))
+
+# NAFLD related outcomes----
+outcome <- c("nafld_di_0")
+
+covars <- c(
+            # "bmi_0", 
+            "race_binary",
+            "site_di",
+            # "smoke_0", 
+            "age_0", 
+            "sex", 
+            "parents_income_0")
+
+# exposures: plasma pfas----
+plasma_pfas <- setdiff(colnames(data)[grep("_targeted_plasma", colnames(data))], c("br_pfos_targeted_plasma", "n_pfos_targeted_plasma"))
+
+# Adding the categorical exposures into the data set----
+data_analysis <- data %>%
+  mutate_at(.vars = vars(all_of(plasma_pfas)), 
+            .funs = list(tertile = ~ntile(.,  3), 
+                         median = ~if_else(. > median(., na.rm = TRUE), 
+                                           2,
+                                           1),
+                         quantile = ~as.integer(cut(., quantile(., c(0, 1/4,1/2,3/4,1), 
+                                                                na.rm = TRUE))),
+                         quintile = ~as.integer(cut(., quantile(., c(0, 1/5,2/5,3/5,4/5,1), 
+                                                                na.rm = TRUE))),
+                         sextile = ~as.integer(cut(., quantile(., c(0, 1/6,2/6,3/6,4/6,5/6,1), 
+                                                               na.rm = TRUE))),
+                         septile = ~as.integer(cut(., quantile(., c(0, 1/7,2/7,3/7,4/7,5/7,6/7,1), 
+                                                               na.rm = TRUE))),
+                         octile = ~as.integer(cut(., quantile(., c(0, 1/8,2/8,3/8,4/8,5/8,6/8,7/8,1), 
+                                                              na.rm = TRUE)))
+            ))
+
+# extracted the related column names and stored into a variable-----
+pfas_names_categorical <- colnames(data_analysis)[
+  grepl("median|tertile|quantile|quintile|sextile|septile|octile",
+        colnames(data_analysis))]
+
+# Getting the intervals for each tiled data-----
+data_interval <- data %>%
+  mutate_at(.vars = vars(all_of(plasma_pfas)), 
+            .funs = list(tertile = ~cut(., quantile(., c(0, 1/3, 2/3, 1), 
+                                                 na.rm = TRUE)), 
+                         median = ~cut(., quantile(., c(0, 1/2, 1), 
+                                                   na.rm = TRUE)),
+                         quantile = ~cut(., quantile(., c(0, 1/4,1/2,3/4,1), 
+                                                     na.rm = TRUE)),
+                         quintile = ~cut(., quantile(., c(0, 1/5,2/5,3/5,4/5,1), 
+                                                     na.rm = TRUE)),
+                         sextile = ~ cut(., quantile(., c(0, 1/6,2/6,3/6,4/6,5/6,1), 
+                                                     na.rm = TRUE)),
+                         septile = ~ cut(., quantile(., c(0, 1/7,2/7,3/7,4/7,5/7,6/7,1), 
+                                                     na.rm = TRUE)),
+                         octile  = ~ cut(., quantile(., c(0, 1/8,2/8,3/8,4/8,5/8,6/8,7/8,1), 
+                                                     na.rm = TRUE))
+            ))
+
+# saving the intervals information to a file-----
+interval <- data_interval %>% 
+  dplyr::select(all_of(pfas_names_categorical)) %>%
+  map(.,table) %>% 
+  map(.,as.data.frame) %>% 
+  bind_rows(.id = "pfas") %>%
+  dplyr::rename(interval = Var1,
+                count = Freq)
+
+n <- length(plasma_pfas)
+
+num <- c(rep(c(1,2,3),n),rep(c(1,2),n),
+         rep(c(1,2,3,4),n), rep(c(1,2,3,4,5),n),
+         rep(c(1,2,3,4,5,6),n), rep(c(1,2,3,4,5,6,7),n),
+         rep(c(1,2,3,4,5,6,7,8),n))
+
+interval_df<- interval %>% mutate(level = num,
+                                  pfas = str_c(pfas, level, ""))
+
+# creating another data set in which the tiled variables are charactoer----
+data_analysis_factor <- data_analysis %>% 
+  dplyr::mutate(
+    across (all_of(pfas_names_categorical),as.numeric)
+  ) %>%
+  dplyr::mutate_at(
+    c("sex", "race_binary"), as.factor
+  ) %>% 
+  drop_na(nafld_nash_mul_0, pf_hp_a_targeted_plasma, all_of(covars))
+```
+
+## Table 1
+
+```{r}
+table1(~ age_0 + race_binary + sex + parents_income_0 + bmi_0,
+       data = data_analysis_factor)
+```
+
+## Table 2
+
+```{r}
+table1(~ nafld_di_0+ nafld_nash_mul_0 + nash_mul_0 + fibrostg_di_0 + steatgrd_mul_0 + bhepa_0,
+       data = data_analysis_factor)
+```
