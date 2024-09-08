@@ -31,6 +31,48 @@ get_pips_reorder <- function(lucid_fit, exposure){
   # Remove cluster 1 pips (they are redundant)
   lucid_pips 
 }
+
+
+
+# Reorder lucid result
+
+reorder_lucidM <- function(lucidus_fit,
+                           reference = NULL) {
+  if(is.null(reference)) {
+    warning("no reference specified, return the original model")
+    return(lucidus_fit)
+  }
+  
+  n_omic <- length(reference)
+  
+  # reorder beta
+  GtoX <- lucidus_fit$res_Beta$Beta
+  lucidus_fit$res_Beta$Beta <- lapply(1:n_omic, function(i) {
+    (-1)^(reference[i] - 1) * GtoX[[i]] # if reference = 1, no changes; 
+    # if reference = 2, flip the reference and negate the estimates
+  })
+  # reorder mu
+  XtoZ <- lucidus_fit$res_Mu_Sigma$Mu
+  lucidus_fit$res_Mu_Sigma$Mu <- lapply(1:n_omic, function(i) {
+    x <- c(1, 2) # order of clusters
+    if(reference[i] == 2) {
+      x <- c(2, 1)
+      XtoZ[[i]][, x]
+    } else{
+      XtoZ[[i]][, x]
+    }
+  }) 
+  # reorder gamma
+  XtoY_rfit <- lucidus_fit$res_Delta$fit$coefficients
+  XtoY_rfit[1] <- XtoY_rfit[1] + sum(XtoY_rfit[-1] * (reference - 1)) # reference level using the new reference
+  XtoY_rfit[-1] <- (-1)^(reference - 1) * XtoY_rfit[-1] # if reference = 2, flip the estimates
+  lucidus_fit$res_Delta$fit$coefficients <- XtoY_rfit
+  
+  # return the object using the new reference
+  return(lucidus_fit)
+}
+
+
 # Funciton to plot LUCID sankey diagram
 plot_lucid_in_parallel_plotly_without_outcome<- function(lucidus_fit,
                                                          sankey_colors,
