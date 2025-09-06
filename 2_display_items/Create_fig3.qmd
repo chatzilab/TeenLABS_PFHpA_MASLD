@@ -1,0 +1,235 @@
+---
+title: "Association of PFHpA and Omics - Pathway Results (Fig 3)"
+author: "Zhenjiang Li"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+toc: true
+format: 
+  html:
+      code-fold: true
+      html-math-method: katex
+editor: visual
+editor_options: 
+  chunk_output_type: console
+project:
+  execute-dir: project
+---
+
+## Environment Setup
+
+```{r}
+#| include: false
+
+library(tidyverse)
+library(fs)
+library(cowplot)
+library(jag2)
+library(broom)
+library(janitor)
+library(epiomics)
+
+library(colorspace)
+library(janitor)
+library(RColorBrewer)
+library(readr)
+
+
+library(readxl)
+library(mgcv)
+library(tidymv)
+library(kableExtra)
+library(ggrepel)
+```
+
+```{r}
+#| include: false
+
+# This script include adjusted univariate associations of plasma pfas and outcomes.
+# Load libraries and directories.
+source(here::here("0_project_setup", "!directories.R"))
+dir_project <- here::here() %>% dirname() %>% fs::path(.)
+
+wrapper <- function(x, ...) 
+{
+  paste(strwrap(x, ...), collapse = "\n")
+}
+
+font_size <- 5
+
+create_volcano <- function(df)
+{
+  volcano_plot <- ggplot(
+    data = df,
+    aes(x=estimate, y=-log10(p_value), col = color_code)) +
+    geom_point() +
+    scale_color_manual(values = c("black", "blue", "red")) +
+    theme_classic() +
+    labs(y = expression(-log[10](p)), x = "Effect estimates") +
+    theme(
+      axis.text = element_text(size = 10),
+      legend.position = "none"
+    )
+  return(volcano_plot)
+}
+
+recode_site_bi <- function(df){
+  df <- df %>% mutate(
+    site_bi = ifelse(site == "CIN", "CIN", "Non CIN")
+  )
+  return(df)
+}
+```
+
+## Model parameters
+
+```{r}
+# Define variables 
+exposure <- c("pf_hp_a_targeted_plasma_log2")
+covars <- c("sex", "race_binary", "parents_income_0", "ageyrs_0", "site_di")
+```
+
+## Analysis 5: Pathway Analysis (IPA)
+
+Analysis was conducted in IPA.
+
+Pathways with at least 3 molecules
+
+```{r}
+ipa_pwas <- read_xlsx(fs::path(
+  dir_report, 
+  "Pathway analysis",
+  "IPA_PWAS and MWAS.xlsx"),
+  sheet = 2)
+dim(ipa_pwas)
+table(ipa_pwas$`p-value` < 0.05)
+
+ipa_pwas_plot <- ipa_pwas %>%
+  filter(abs(`Z-score`) >= 2) %>%
+  group_by(Categories) %>%
+  top_n(`p-value`, n = -1) %>%
+  ungroup() %>%
+  filter(!(`Diseases or Functions Annotation` %in% c(
+    "Development of head",
+    "Neurodegeneration",
+    "Recruitment of cells"
+  ))) %>%
+  filter(`# Molecules` >= 5) %>%
+  # filter(!(`Diseases or Functions Annotation` %in% c(
+  #   "Activation of cells",
+  #   "Cell movement",
+  #   "Immune mediated inflammatory disease",
+  #   "Inflammation of absolute anatomical region",
+  #   "Rheumatic Disease",
+  #   "Inflammation of joint"
+  # ))) %>%
+  top_n(`p-value`, n = -10) %>%
+  mutate_at("# Molecules", as.integer)
+
+View(ipa_pwas_plot)
+```
+
+```{r}
+ipa_mwas <- read_xlsx(fs::path(
+  dir_report,
+  "Pathway analysis",
+  "IPA_PWAS and MWAS.xlsx"),
+  sheet = 4)
+dim(ipa_mwas)
+table(ipa_mwas$`p-value` < 0.05)
+
+ipa_mwas_plot <- ipa_mwas %>%
+  # filter(abs(`Z-score`) >= 2) %>%
+  group_by(Categories) %>%
+  # top_n(`p-value`, n = -1) %>%
+  ungroup() %>%
+  filter(`# Molecules` >= 5) %>%
+  filter(!(`Diseases or Functions Annotation` %in% c(
+    "Chronic phase experimental autoimmune encephalomyelitis",
+    "Zymosan-induced peritonitis",
+    "Growth of bacteria",
+    "Entry into S phase",
+    "Activation of cells"
+  ))) %>%
+  top_n(`p-value`, n = -10) %>%
+  mutate_at("# Molecules", as.integer)
+# ipa_mwas_plot$`Diseases or Functions Annotation`[ipa_mwas_plot$`Diseases or Functions Annotation` == "Inflammation of organ"] <- "Inflammation"
+View(ipa_mwas_plot)
+```
+
+### Figure 1e
+
+```{r}
+png(fs::path(
+  dir_figure,
+  "Final Figures",
+  "Figure 1E.png"),
+  width = 3, height = 1.5, units = "in", res = 600)
+(p_fig1e_pwas <- ipa_pwas_plot %>%
+    ggplot +
+    geom_col(aes(x = `Diseases or Functions Annotation`,
+                 y = `-log10(pval)`,
+                 fill = `# Molecules`),
+             width = 0.5) +
+    scale_fill_gradient(high = "#132B43", low = "#56B1F7",
+                        breaks = c(5, 10, 15)) +
+    geom_hline(aes(yintercept = -log10(0.05)), lty = "dashed", color = "black") +
+    coord_flip() +
+    labs(y = expression("-log" [10] (italic(p))),
+         x = "Pathways enriched by proteins\nin PFHpA exposed adolescents") +
+    theme(
+      plot.margin = unit(c(0.5,0,0,0), "cm"),
+      panel.background = element_blank(),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      axis.line = element_line(),
+      axis.text = element_text(size = font_size),
+      axis.title = element_text(size = font_size, face = "plain"),
+      legend.position = c(0,1.1),
+      legend.direction = "horizontal",
+      legend.text=element_text(size = font_size-1),
+      legend.key.size = unit(0.5,"line"),
+      legend.title = element_text(size = font_size)
+    ) +
+    guides(fill = guide_legend(title = "N. of enriched proteins"))
+  )
+dev.off()
+```
+
+### Figure 1f
+
+```{r}
+png(fs::path(
+  dir_figure,
+  "Final Figures",
+  "Figure 1F.png"),
+  width = 3, height = 1.5, units = "in", res = 600)
+(p_fig1e_mwas <- ipa_mwas_plot %>%
+    ggplot +
+    geom_col(aes(x = `Diseases or Functions Annotation`,
+                 y = `-log10(pval)`,
+                 fill = `# Molecules`),
+             width = 0.5) +
+    scale_fill_gradient(high = "#0B3D2E", low = "#7BE495",
+                        breaks = c(5, 7, 9)) +
+    geom_hline(aes(yintercept = -log10(0.05)), lty = "dashed", color = "black") +
+    coord_flip() +
+    labs(y = expression("-log" [10] (italic(p))),
+         x = "Pathways enriched by metabolites\nin PFHpA exposed adolescents") +
+    theme(
+      plot.margin = unit(c(0.5,0,0,0), "cm"),
+      panel.background = element_blank(),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      axis.line = element_line(),
+      axis.text = element_text(size = font_size),
+      axis.title = element_text(size = font_size, face = "plain"),
+      legend.position = c(0,1.1),
+      legend.direction = "horizontal",
+      legend.key.size = unit(0.5,"line"),
+      legend.text=element_text(size = font_size-1),
+      legend.title = element_text(size = font_size)
+    ) +
+    guides(fill = guide_legend(title = "N. of enriched metabolites",
+                               nrow = 1))
+  )
+dev.off()
+```
