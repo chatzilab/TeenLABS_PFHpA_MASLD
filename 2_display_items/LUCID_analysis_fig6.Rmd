@@ -1,0 +1,334 @@
+---
+title: "LUCID_analysis_fig6"
+author: "Hongxu Wang"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    df_print: paged
+    code_folding: hide
+editor_options: 
+  chunk_output_type: console
+---
+
+## Load Data
+```{r LUCID analysis setup, include = FALSE, echo = FALSE}
+source(fs::path(here::here(),"0_project_setup", "!libraries.R"))
+source(fs::path(here::here(),"0_project_setup", "!directories.R"))
+source(fs::path(here::here(),"0_project_setup", "!functions.R"))
+
+
+library(htmlwidgets)
+library(plotly)
+library(LUCIDusM)
+
+options(knitr.table.format = "html")
+knitr::opts_chunk$set(echo = TRUE, message = FALSE)
+
+## Load metabolomics data
+metabolomics <- read.csv(fs::path(dir_project,
+  "10_LUCID",
+  "0_data",
+  "tl_metabolomics.csv"))%>%
+  column_to_rownames("key") %>% 
+  t() %>% data.frame() %>% 
+  rownames_to_column("feature")
+
+dim(metabolomics) # 131 x 24372
+
+metabolomics<- metabolomics %>%  
+  mutate(feature = str_replace(feature, "X", ""))%>%
+  mutate(mz = str_split_fixed(feature, "_", 2)[,1],
+         time = str_split_fixed(feature, "_", 2)[,2]) %>%
+  mutate(mz = round(as.numeric(mz), 5),
+         time = round(as.numeric(time), 1)) %>%
+  mutate(feature = str_c(mz,time, sep= "_"))
+
+
+# load confirmed annotated metabolomics
+annotated_metabolomics <-
+  readxl::read_xlsx(fs::path(dir_data%>% dirname() %>% 
+                               dirname() %>% dirname() %>% dirname(),
+                    "2_Cleaned Data",
+                    "Metabolomics",
+                    "confirmed_unique_annotation_0502.xlsx"))%>%
+  mutate(feature = str_c(mz, time, sep = "_"))%>%
+  filter(grepl("Endogenous", Standard_grp))%>% #410
+  filter(!grepl("Pesticides", Standard_class)) #358
+
+
+annotated_metabolomics_data <- metabolomics %>% 
+  filter(feature %in% annotated_metabolomics$feature)%>%
+  select(-mz, -time) %>%
+  column_to_rownames("feature") %>% 
+  t() %>% data.frame() %>% 
+  rownames_to_column("key") %>%
+  mutate(key = str_replace(key , "X", ""))
+
+## load proteomics data
+proteomics <- read.csv(fs::path(dir_project,
+  "10_LUCID",
+  "0_data",
+  "tl_proteomics.csv"))
+dim(proteomics) # 131 x 703
+
+# Load exposure outcome data
+main_var <- read.csv(fs::path(dir_project,
+  "10_LUCID",
+  "0_data",
+  "tl_exposure_outcome_covars.csv"))
+
+dim(main_var) # 131 x 7
+
+tl_data <- readRDS(fs::path(dir_home,
+                            "2_Cleaned Data",
+                            "tl_covariates_outcomes_w.rds"))
+main_var <- main_var %>% 
+  tidylog::left_join(tl_data %>%
+                       dplyr::select(key, nafld_nash_mul_0, site)%>%
+                       mutate(key = as.integer(key),
+                              site_di = ifelse(site == "CIN", "CIN", "Non_CIN")), 
+                     by = "key")
+
+# match IDs
+annotated_metabolomics_data <- annotated_metabolomics_data[order(annotated_metabolomics_data$key), ]
+proteomics <- proteomics[order(proteomics$key), ]
+main_var <- main_var[order(main_var$key), ]
+main_var$nafld_di_0 <- as.factor(main_var$nafld_di_0)
+all(c(setequal(annotated_metabolomics_data$key, proteomics$key),
+      setequal(annotated_metabolomics_data$key, main_var$key)))
+# should be TRUE
+
+main_var <- main_var %>% 
+  mutate(nafld_di_0 = ifelse(nafld_di_0 == "NAFLD", 1, 0))
+
+data <- annotated_metabolomics_data %>% 
+  mutate(key = as.numeric(key)) %>%
+  tidylog::left_join(proteomics) %>%
+  tidylog::left_join(main_var)
+
+covars <- c("ageyrs_0","sex","race_binary","parents_income_0","site_di" ) 
+
+met_list <- readxl::read_xlsx(fs::path(dir_project,
+  "10_LUCID",
+  "0_data", 
+  "Proteins and metabolites_overlap with liver organoid RNAseq_final.xlsx"), sheet = "Metabolites")%>%
+  mutate(feature = paste0("X", feature))
+
+proteins_list <- readxl::read_xlsx(fs::path(dir_project,
+  "10_LUCID",
+  "0_data",
+  "Proteins and metabolites_overlap with liver organoid RNAseq_final.xlsx"), sheet = "Proteins")
+
+protein_name <- proteins_list$`Protein names` %>% tolower()
+
+feature_name <- met_list$feature
+
+met_name <- met_list$`Metabolite name`
+
+setnames(data, old = feature_name, new = met_name)
+data_analysis <- data %>% select(colnames(main_var), protein_name, met_name)
+
+data_omics <- list(metabolomics =
+                      scale(data_analysis %>% select(met_name)),
+                    proteomics = 
+                      scale(data_analysis %>% select(protein_name)))
+```
+
+
+## Lucid analysis - Unsupervised analysis without outcome
+**exclude outcome from the analysis**
+```{r lucid analysis unsupervised}
+# include two omics layers in a parallel fashion
+fit <- LUCIDusM::est_lucid(G = data_analysis$pf_hp_a_targeted_plasma_log2,
+                   Z = data_omics,
+                   Y = rbinom(131, 1, 0.5),
+                   K = c(2, 2),
+                   useY = FALSE,
+                   family = "binomial")
+
+fit <- reorder_lucidM(fit, reference = c(2,2))
+
+fit$res_Beta$Beta
+metab_profile <- fit$res_Mu_Sigma$Mu[[1]]
+colnames(metab_profile) <- c("cluster 1", "cluster 2")
+prot_profile <- fit$res_Mu_Sigma$Mu[[2]]
+colnames(prot_profile) <- c("cluster 1", "cluster 2")
+
+
+
+metab_profile <- data.frame(metab_profile) %>% 
+  rownames_to_column("feature")
+prot_profile <- data.frame(prot_profile) %>% 
+  rownames_to_column("feature")
+
+fit$res_Delta$fit$coefficients
+
+omics_feature_profile <- bind_rows(metab_profile, prot_profile)
+
+# writexl::write_xlsx(
+#   omics_feature_profile,
+#   fs::path(dir_results,
+#   "omics_feature_effect_estimates_without_outcome_0613.xlsx"))
+```
+
+## Association of individual-level inclusion probability with MASLD using logistic regression
+```{r model}
+# Get individual-level inclusion probability (IPs)
+pips<- get_pips_reorder(fit) %>%
+  dplyr::select(pip_l1_c2, pip_l2_c2)
+
+data_analysis1 <- bind_cols(data_analysis, pips) %>%
+  rename(m_cluster = pip_l1_c2,
+         p_cluster = pip_l2_c2)
+
+# Logistic regression
+outcome <- c("nafld_di_0")
+covars <- c("ageyrs_0","sex","race_binary","parents_income_0","site_di" )
+exposure <- c("m_cluster", "p_cluster")
+
+
+formula = str_c(outcome, "~", str_c(c(exposure, covars), collapse = "+"))
+
+model <- glm(as.formula(formula),
+                         data = data_analysis1,
+                         na.action = na.exclude, 
+                         trace = FALSE, 
+             family = "binomial") %>%
+  tidy(., conf.int = TRUE) %>%
+  mutate(odds_ratio = exp(estimate),
+         conf_high = exp(conf.high),
+         conf_low = exp(conf.low),
+         outcome = "NO NAFLD/NAFLD") 
+  
+
+model <- model %>% dplyr::select(outcome, term,estimate, odds_ratio, conf_high, conf_low, p.value) %>%
+  filter(term %in% c("m_cluster", "p_cluster")) 
+
+# result:
+# IP_metabolomics with MASLD: odds ratio 0.51
+# IP_proteomics with MASLD: odds ratio 7.08
+```
+
+## Fig6a. sankey diagram with outcome(MASLD: YES/NO)
+```{r sankey diagram with outcome}
+# Color pallet for Sankey
+col_pal <- RColorBrewer::brewer.pal(n = 8, name = "Dark2")
+sankey_colors <- matrix(c("exposure", col_pal[6],
+                          "lc1",      col_pal[1],
+                          "lc2",      col_pal[2],
+                          "lc3",      col_pal[3],
+                          "lc4",      col_pal[4],
+                          "layer1",   col_pal[1],
+                          "layer2",   col_pal[2],
+                          "layer3",   col_pal[3],
+                          "layer4",   col_pal[4],
+                          "Outcome",  col_pal[8],
+                          "TRUE",     "#6372e0", # Blue
+                          "FALSE",    "#d1d4ff", # Light grey
+                          "pos_clus_to_out", "red", 
+                          "neg_clus_to_out", "#e4e5f2"), 
+                        byrow = TRUE, nrow = 14) |> 
+  as_tibble(.name_repair = "universal") |>
+  janitor::clean_names() |>
+  rename("domain" = x1, 
+         "range" = x2)
+
+(fig <- plot_lucid_in_parallel_plotly_with_di_outcome(fit, sankey_colors, text_size = 18))
+
+
+# saveWidget(fig, file = fs::path(dir_figures, "with_di_outcome_reorder_0724.html"))
+```
+
+## Fig6b: omics profiles plot 
+```{r omics profiles plot}
+## Omics profiles plot----
+M_mean_layer1 <- as.data.frame(fit$res_Mu_Sigma$Mu[[1]]) %>%
+  rownames_to_column("variable") %>%
+  mutate(omic_layer = "Metabolome") %>%
+  rename(`Low Risk\nMulti-Omic Profile` = V2,
+         `High Risk\nMulti-Omic Profile` = V1) 
+M_mean_layer2 <- as.data.frame(fit$res_Mu_Sigma$Mu[[2]]) %>%
+  rownames_to_column("variable") %>%
+  mutate(omic_layer = "Proteome") %>%
+  rename(`High Risk\nMulti-Omic Profile` = V2,
+         `Low Risk\nMulti-Omic Profile` = V1)
+
+# relationship of latent cluster with omics layers
+M_mean <- M_mean_layer1 %>% bind_rows(M_mean_layer2)
+M_mean1 <- M_mean %>% 
+  pivot_longer(cols = c(`Low Risk\nMulti-Omic Profile`, `High Risk\nMulti-Omic Profile`),
+               names_to = "cluster",
+               values_to = "value")
+
+# add color label for omics layer
+M_mean2 <-  M_mean1 |>
+  mutate(color_label = case_when(str_detect(omic_layer,  
+                                            "Metabolome") ~ "1", 
+                                 str_detect(omic_layer,
+                                            "Proteome") ~ "2")) %>%
+  mutate(color_label1  = case_when(str_detect(omic_layer,  
+                                            "Metabolome")&value > 0 ~ "1",
+                                   str_detect(omic_layer,  
+                                            "Metabolome")&value < 0 ~ "2",
+                                   str_detect(omic_layer,
+                                            "Proteome")&value > 0 ~ "3",
+         str_detect(omic_layer,
+                                            "Proteome")&value < 0 ~ "4"))
+
+M_mean3 <- M_mean2 %>% 
+  mutate(variable = factor(variable, 
+                           levels = c(
+                                      "Oxoglutarate",                                                         "Indole-3-acetate",
+                                      "Glucuronate",
+                                      "Deoxycarnitine",
+                                      "Hypoxanthine",
+                                      "Adenine",
+                                      "Uric Acid",
+                                      "Eicosapentaenoate",
+                                      "Glycocholic acid",
+                                      "Glycochenodeoxycholic acid",
+                                      "Sarcosine",
+                                      "Tryptophan",
+                                      "Trans-4-Hydroxy-L-Proline",
+                                      "Proline",
+                                      "Phenylalanine",
+                                      "Homocysteine",
+                                      "Glycine",
+                                      "beta-Alanine",
+                                      "5-Aminovaleric acid",
+                                      "hyal1",
+                                      "f7",
+                                      "ca5a",
+                                      "c2",
+                                      "adh4",
+                                      "acy1"
+                                      )))
+ggplot(M_mean3, aes(fill = color_label1, y = value, x = variable)) +
+  geom_bar(position="dodge", stat="identity") +
+  # ggtitle("Omics profiles for 2 latent clusters") +
+  # facet_wrap(~(cluster)) +
+  facet_grid(rows = vars(omic_layer), cols = vars(cluster), scales = "free_y", space = "free") +
+  theme(legend.position="none") +
+  geom_hline(yintercept = 0) +
+  xlab("") +
+  ylab("") +
+  theme(text = element_text(size=15),
+        # axis.text.x = element_text(angle = 90, vjust = 1,
+        #                            hjust = 1),
+        plot.margin = margin(10, 10, 10, 80),
+        panel.background = element_rect(fill="white"), 
+        strip.background = element_rect(fill = "white"),
+        axis.line.x = element_line(color = "black"),
+        axis.line.y = element_line(color = "black"),) +
+  # scale_fill_manual(values = c("#1B9E77", "#D95F02")) +
+  scale_fill_manual(values = c("#38761d", "#b6d7a8","#bf9000","#ffd966")) +
+
+  coord_flip()
+  
+
+# ggsave(filename = fs::path(dir_figures,
+#                            "omics_profile_without_outcome_1106.png"),
+#        width = 8, height = 8, dpi = 300, bg = "white")
+```
